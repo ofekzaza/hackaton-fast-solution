@@ -47,13 +47,14 @@ CATEGORICAL_COLUMNS = ["city"]
 
 def _create_temporal_features(df):
     ts = pd.to_datetime(df["hour_ts"])
-    
+    df["hour_ts"] = ts
+
     if "hour" not in df.columns:
         df["hour"] = ts.dt.hour
-    
+
     if "weekday" not in df.columns:
         df["weekday"] = ts.dt.weekday
-    
+
     return df
 
 
@@ -228,6 +229,7 @@ def create_features(df, artifacts=None, is_train=False):
     if "station_hour_mean_demand" in df.columns:
         is_rush = df["is_morning_rush"] | df["is_evening_rush"]
         df["rush_x_station_hour_mean"] = is_rush * df["station_hour_mean_demand"]
+        df["rush_x_station_hour_mean"] = df["rush_x_station_hour_mean"].clip(upper=3.0)
 
     return df
 
