@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
-import warnings
 from pathlib import Path
 
 import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+
 from model import FEATURE_COLUMNS, make_features_from_rides
 
 DATA_ROOT = Path("../../dataset")
@@ -28,16 +27,16 @@ def main() -> None:
         f"max={d.max():.0f}"
     )
     zero_frac = (d == 0).mean()
+    
     print(f"Zero-demand fraction: {zero_frac:.1%}")
 
     train_df = train_df.sort_values("hour_ts").reset_index(drop=True)
 
-    # Hold out the last 7 days as the early-stopping validation window.
-    # This matches the structure of the actual test period so early stopping
-    # stops at a tree count that generalises to that kind of horizon.
+    # we have about several weeks of data, so use the last week for testing
     cutoff = pd.to_datetime(train_df["hour_ts"]).max() - pd.Timedelta("7D")
     train = train_df[pd.to_datetime(train_df["hour_ts"]) < cutoff].copy()
     valid = train_df[pd.to_datetime(train_df["hour_ts"]) >= cutoff].copy()
+
     print(f"Train: {len(train):,} rows  (up to {cutoff.date()}")
     print(f"Valid: {len(valid):,} rows  ({cutoff.date()} onwards)")
 

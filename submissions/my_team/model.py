@@ -3,28 +3,20 @@ import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 
 FEATURE_COLUMNS = [
-    # --- Identity ---
     "city",
-    # --- Time (hour of day + day of week only) ---
     "hour",
     "weekday",
-    # --- Calendar ---
     "working_day",
-    # --- Weather: human-comfort composite scores ---
-    # comfort_score  : how pleasant is the temperature/humidity/sky?
-    # outdoor_pleasantness : how bad is rain/snow/wind?
-    "comfort_score",
-    "outdoor_pleasantness",
-    # --- Location / infrastructure ---
-    # recreational_accessibility: combined park area + bike-lane length
-    "recreational_accessibility",
+    "comfort_score", # how good is temperature/humidity/sky
+    "outdoor_pleasantness", # how bad is rain/snow/wind
+    "recreational_accessibility", # combined park area + bike-lane length
     "office_poi_count_1000m",
     "retail_poi_count_1000m",
     "restaurant_cafe_count_500m",
     "transit_stop_count_500m",
     "distance_to_nearest_rail_station",
     "distance_to_city_center",
-    # --- Historical demand stats ---
+  
     "station_mean_demand",
     "station_median_demand",
     "station_max_demand",
@@ -37,11 +29,10 @@ FEATURE_COLUMNS = [
     "station_hour_median_demand",
     "station_hour_max_demand",
     "station_hour_std_demand",
-    # --- Rush-hour signals ---
     "is_morning_rush",
     "is_evening_rush",
     "rush_x_station_hour_mean",
-    # --- Lag features ---
+    # lag fetures
     "lag_1d_demand",
     "lag_7d_demand",
     "lag_14d_demand",
@@ -49,16 +40,20 @@ FEATURE_COLUMNS = [
     "lag_rolling_mean",
 ]
 
+grp_cols = ["city", "start_station_id", "hour_ts"]
+
 CATEGORICAL_COLUMNS = ["city"]
 
 
 def _create_temporal_features(df):
-    """Extract only hour-of-day and day-of-week from hour_ts."""
     ts = pd.to_datetime(df["hour_ts"])
+    
     if "hour" not in df.columns:
         df["hour"] = ts.dt.hour
+    
     if "weekday" not in df.columns:
         df["weekday"] = ts.dt.weekday
+    
     return df
 
 
@@ -85,23 +80,29 @@ def _merge_agg_features(df, artifacts):
         df = df.merge(
             artifacts["station_stats"], on=["city", "start_station_id"], how="left"
         )
+    
     if "city_hour_stats" in artifacts:
         df = df.merge(artifacts["city_hour_stats"], on=["city", "hour"], how="left")
+    
     if "city_weekday_stats" in artifacts:
         df = df.merge(
             artifacts["city_weekday_stats"], on=["city", "weekday"], how="left"
         )
+    
     if "city_mean_stats" in artifacts:
         df = df.merge(artifacts["city_mean_stats"], on=["city"], how="left")
+    
     if "station_hour_stats" in artifacts:
         df = df.merge(
             artifacts["station_hour_stats"],
-            on=["city", "start_station_id", "hour"],
+            on=grp_cols,
             how="left",
         )
+    
     for col in FEATURE_COLUMNS:
         if col in df.columns:
             df[col] = df[col].fillna(0.0)
+    
     return df
 
 
@@ -126,10 +127,8 @@ def _merge_lag_features(df, demand_history):
     # Deduplicate after normalisation — defensive guard against any residual
     # duplicate keys that would cause a left-merge to explode row count.
     demand_history = demand_history.groupby(
-        ["city", "start_station_id", "hour_ts"], as_index=False
+        grp_cols, as_index=False
     )["demand"].sum()
-
-    keys = ["city", "start_station_id", "hour_ts"]
 
     for col, delta in [
         ("lag_1d_demand", pd.Timedelta("1D")),
@@ -139,13 +138,13 @@ def _merge_lag_features(df, demand_history):
     ]:
         # Shift the history forward so that row at time T gets the value from T-delta
         shifted = demand_history[
-            ["city", "start_station_id", "hour_ts", "demand"]
+            grp_cols + ["demand"]
         ].copy()
         shifted["hour_ts"] = shifted["hour_ts"] + delta
         shifted = shifted.rename(columns={"demand": col})
-        df = df.merge(shifted, on=keys, how="left")
+        df = df.merge(shifted, on=grp_cols, how="left")
 
-    # Average of three weekly lags as a smoothed baseline
+    # avg 3 wks
     weekly = [
         c
         for c in ["lag_7d_demand", "lag_14d_demand", "lag_21d_demand"]
@@ -185,9 +184,7 @@ def create_features(df, artifacts=None, is_train=False):
         if "demand_history" in artifacts:
             df = _merge_lag_features(df, artifacts["demand_history"])
 
-    # --- Weather: human-comfort score ---
-    # Combines apparent temperature, humidity, and cloud cover into a single
-    # [0, 1] score representing how pleasant it feels to be outside.
+    # 1 most pleasant, 0 terriable hell on earth
     if "apparent_temperature" in df.columns and "relative_humidity_2m" in df.columns:
         temp_c = np.exp(-((df["apparent_temperature"] - 18.0) ** 2) / (2 * 12.0**2))
         hum_c = np.clip(1.0 - np.abs(df["relative_humidity_2m"] - 50.0) / 50.0, 0, 1)
@@ -198,9 +195,8 @@ def create_features(df, artifacts=None, is_train=False):
         )
         df["comfort_score"] = 0.5 * temp_c + 0.3 * hum_c + 0.2 * cloud_c
 
-    # --- Precipitation: outdoor pleasantness score ---
-    # Product of exponential decay terms for rain, snow, and wind.
-    # 1.0 = perfect conditions, 0.0 = extreme weather.
+    # Precipitation - rain, snow, and wind.
+    # 1 perfect, 0 extreme weather
     rain = (
         df["rain"].clip(0) if "rain" in df.columns else pd.Series(0.0, index=df.index)
     )
@@ -218,19 +214,17 @@ def create_features(df, artifacts=None, is_train=False):
         np.exp(-rain / 2.0) * np.exp(-snow * 5.0) * np.exp(-wind / 25.0)
     )
 
-    # --- Location: recreational accessibility score ---
-    # Combines park area and bike-lane length into a single infrastructure score.
+    # any disabled bike for the unfortunate?
     if "park_area_500m" in df.columns and "bike_lane_length_500m" in df.columns:
         df["recreational_accessibility"] = (
             df["park_area_500m"] / 100_000.0 + df["bike_lane_length_500m"] / 10_000.0
         )
 
-    # --- Rush-hour flags ---
+    # rush, nicky lauda
     if "hour" in df.columns:
         df["is_morning_rush"] = ((df["hour"] >= 7) & (df["hour"] <= 9)).astype(int)
         df["is_evening_rush"] = ((df["hour"] >= 17) & (df["hour"] <= 19)).astype(int)
 
-    # Interaction: rush hour × historical station-hour mean
     if "station_hour_mean_demand" in df.columns:
         is_rush = df["is_morning_rush"] | df["is_evening_rush"]
         df["rush_x_station_hour_mean"] = is_rush * df["station_hour_mean_demand"]
@@ -241,8 +235,7 @@ def create_features(df, artifacts=None, is_train=False):
 def make_features_from_rides(rides_df):
     rides = rides_df.copy()
 
-    # City 3 has ~2 k trips and never appears in the test set — drop it so
-    # the model doesn't overfit noise from a near-empty city.
+    # City 3 data filtering so no overfitting
     city_counts = rides["city"].value_counts()
     major_cities = city_counts[city_counts >= 10_000].index
     rides = rides[rides["city"].isin(major_cities)].copy()
@@ -250,42 +243,12 @@ def make_features_from_rides(rides_df):
     rides["hour_ts"] = pd.to_datetime(rides["hour_ts"])
     rides["hour"] = rides["hour_ts"].dt.hour
     rides["weekday"] = pd.to_datetime(rides["date"]).dt.weekday
+
     if "weekend" not in rides.columns:
         rides["weekend"] = rides["weekday"].isin([5, 6]).astype(int)
+    
     rides["city"] = rides["city"].astype(str)
     rides["start_station_id"] = rides["start_station_id"].astype(str)
-
-    grp_cols = [
-        "city",
-        "start_station_id",
-        "hour_ts",
-        # "hour",
-        # "weekday",
-        # "weekend",
-        # "holiday",
-        # "working_day",
-        # # start_lat / start_lng removed: not used as training features and
-        # # NaN values caused different groupby keys for the same station-hour,
-        # # creating duplicate rows in obs_demand.
-        # "bike_lane_length_500m",
-        # "park_area_500m",
-        # "university_count_1000m",
-        # "office_poi_count_1000m",
-        # "retail_poi_count_1000m",
-        # "restaurant_cafe_count_500m",
-        # "transit_stop_count_500m",
-        # "distance_to_nearest_rail_station",
-        # "distance_to_city_center",
-        # "temperature_2m",
-        # "relative_humidity_2m",
-        # "apparent_temperature",
-        # "precipitation",
-        # "rain",
-        # "snowfall",
-        # "cloud_cover",
-        # "wind_speed_10m",
-    ]
-    grp_cols = [c for c in grp_cols if c in rides.columns]
 
     obs_demand: pd.DataFrame = (
         rides.groupby(grp_cols, dropna=False, observed=True)
@@ -300,16 +263,7 @@ def make_features_from_rides(rides_df):
     obs_demand = obs_demand.merge(rides_dedup, on=grp_cols, how="left")
     print(obs_demand.columns)
     print(obs_demand.__len__())
-    # obs_demand = pdfobs_demand.groupby(grp_cols, dropna=False, observed=True)
-    
-    # for column in obs_demand.columns:
-    #     if column in grp_cols:
-    #         continue
 
-    #     obs_demand = obs_demand[column].first()
-    # Normalise station IDs now so every downstream table (station_list,
-    # demand_lookup, station_meta, stats) uses the same format that
-    # create_features() will normalise the input df to at merge time.
     obs_demand["start_station_id"] = _normalize_station_id(
         obs_demand["start_station_id"]
     )
@@ -401,7 +355,7 @@ def make_features_from_rides(rides_df):
 
     demand_lookup = obs_demand[["city", "start_station_id", "hour_ts", "demand"]]
     full = full.merge(
-        demand_lookup, on=["city", "start_station_id", "hour_ts"], how="left"
+        demand_lookup, on=grp_cols, how="left"
     )
     full["demand"] = full["demand"].fillna(0).astype(int)
 
@@ -442,7 +396,7 @@ def make_features_from_rides(rides_df):
         .reset_index(name="city_mean_demand")
     )
     station_hour_stats = (
-        station_hour_demand.groupby(["city", "start_station_id", "hour"])["demand"]
+        station_hour_demand.groupby(grp_cols)["demand"]
         .agg(["mean", "median", "max", "std"])
         .rename(
             columns={
@@ -458,12 +412,9 @@ def make_features_from_rides(rides_df):
         "station_hour_std_demand"
     ].fillna(0.0)
 
-    # Build demand history directly from obs_demand so each (city, station, hour_ts)
-    # is guaranteed to be unique — station_hour_demand can have duplicate keys
-    # when trips in the same slot differ in NaN-valued groupby columns (lat/lng, weather).
     demand_history = (
-        obs_demand[["city", "start_station_id", "hour_ts", "demand"]]
-        .groupby(["city", "start_station_id", "hour_ts"], as_index=False)["demand"]
+        obs_demand[grp_cols + ["demand"]]
+        .groupby(grp_cols, as_index=False)["demand"]
         .sum()
     )
 
@@ -493,6 +444,10 @@ class BikeDemandModel:
 
     def _prepare_x(self, test_df):
         X = create_features(test_df, self.artifacts, is_train=False)
+        
+        if not self.artifacts:
+            raise RuntimeError("missing artifacts")
+        
         encoders = self.artifacts.get("encoders", {})
         X, _ = _encode_categoricals(X, encoders=encoders)
         X = X.reindex(columns=FEATURE_COLUMNS, fill_value=0)
@@ -502,10 +457,12 @@ class BikeDemandModel:
         return X
 
     def predict(self, test_df: pd.DataFrame) -> np.ndarray:
-        if self.artifacts is None:
+        if self.artifacts is None or "model" not in self.artifacts:
             raise RuntimeError("Model not loaded.")
+        
         X = self._prepare_x(test_df)
         model = self.artifacts["model"]
         preds = model.predict(X)
         preds = np.where(preds < 0.6, 0.0, preds)
+
         return np.maximum(0.0, preds)

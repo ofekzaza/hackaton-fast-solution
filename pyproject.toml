@@ -1,0 +1,14 @@
+[project]
+name = "aitest"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "joblib>=1.5.3",
+    "lightgbm[cuda]>=4.6.0",
+    "matplotlib>=3.11.0",
+    "pandas>=3.0.3",
+    "scikit-learn>=1.9.0",
+    "torch",
+]
