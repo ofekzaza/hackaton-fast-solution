@@ -1,0 +1,11 @@
+Student1,Student2,Student3
+123456789,234567891,345678912
+
+LightGBM gradient boosting model for bike-sharing demand prediction.
+Features: temporal (hour, weekday, month, cyclic encoding), weather,
+station metadata (POI counts, location), and aggregated statistics
+(station-level mean/median demand, city-level patterns).
+Model trained with MAE objective, 1500 trees, early stopping.
+Handles city 3 generalization via fallback to city-level aggregates.
+
+To reproduce: cd submissions/my_team && python train.py
